@@ -14,6 +14,7 @@ import { SwappingText } from "@animate-ui/react/primitives/texts/swapping";
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const LIFE_EXPECTANCY = 90;
 const AVERAGE_DAYS_PER_YEAR = 365.2425;
+const BIRTH_DATE_STORAGE_KEY = "memento-mori-birth-date";
 
 type GridLayout = {
   width: number;
@@ -32,14 +33,40 @@ type Tooltip = {
 
 type GridView = "days" | "months" | "years";
 
-const GRID_VIEWS: { value: GridView; label: string }[] = [
-  { value: "days", label: "Dias" },
-  { value: "months", label: "Meses" },
-  { value: "years", label: "Anos" },
+const GRID_VIEWS: { value: GridView; label: string; unit: string }[] = [
+  { value: "days", label: "Dias", unit: "dias" },
+  { value: "months", label: "Meses", unit: "meses" },
+  { value: "years", label: "Anos", unit: "anos" },
 ];
 
-function isGridView(value: string | null): value is GridView {
-  return GRID_VIEWS.some((option) => option.value === value);
+function isGridView(value: unknown): value is GridView {
+  return (
+    typeof value === "string" &&
+    GRID_VIEWS.some((option) => option.value === value)
+  );
+}
+
+function getGridCounts(
+  view: GridView,
+  birthDate: number,
+  today: number,
+  totalDays: number,
+) {
+  const total =
+    view === "days"
+      ? totalDays
+      : view === "months"
+        ? LIFE_EXPECTANCY * 12
+        : LIFE_EXPECTANCY;
+  const currentIndex =
+    view === "days"
+      ? Math.floor((today - birthDate) / DAY_IN_MS)
+      : view === "months"
+        ? getMonthIndex(birthDate, today)
+        : getCompletedYears(birthDate, today);
+  const lived = Math.min(total, Math.max(0, currentIndex + 1));
+
+  return { lived, remaining: total - lived, total };
 }
 
 function getTodayIsoDate() {
@@ -124,19 +151,18 @@ function LifeGrid({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [layout, setLayout] = useState<GridLayout | null>(null);
   const [tooltip, setTooltip] = useState<Tooltip>(null);
-  const totalCells =
-    view === "days"
-      ? totalDays
-      : view === "months"
-        ? LIFE_EXPECTANCY * 12
-        : LIFE_EXPECTANCY;
+  const { lived: livedCells, total: totalCells } = getGridCounts(
+    view,
+    birthDate,
+    today,
+    totalDays,
+  );
   const todayIndex =
     view === "days"
       ? Math.floor((today - birthDate) / DAY_IN_MS)
       : view === "months"
         ? getMonthIndex(birthDate, today)
         : getCompletedYears(birthDate, today);
-  const livedCells = Math.min(totalCells, Math.max(0, todayIndex + 1));
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -441,10 +467,50 @@ export default function Home() {
   const [birthIso, setBirthIso] = useState("");
   const [modalOpen, setModalOpen] = useState(true);
   const [gridView, setGridView] = useState<GridView>("days");
+  const [appReady, setAppReady] = useState(false);
+  const [storageError, setStorageError] = useState("");
 
   useEffect(() => {
-    setTodayIso(getTodayIsoDate());
+    const today = getTodayIsoDate();
+    setTodayIso(today);
+
+    try {
+      const savedDate = window.localStorage.getItem(BIRTH_DATE_STORAGE_KEY);
+      const savedTimestamp = savedDate ? parseIsoDate(savedDate) : null;
+      const todayTimestamp = parseIsoDate(today);
+
+      if (
+        savedDate &&
+        savedTimestamp !== null &&
+        todayTimestamp !== null &&
+        savedTimestamp <= todayTimestamp
+      ) {
+        setBirthIso(savedDate);
+        setModalOpen(false);
+      }
+    } catch (error) {
+      console.error("Não foi possível ler a data salva no navegador.", error);
+      setStorageError(
+        "Não foi possível acessar o armazenamento do navegador. A data não será salva neste dispositivo.",
+      );
+    } finally {
+      setAppReady(true);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!appReady || !birthIso) return;
+
+    try {
+      window.localStorage.setItem(BIRTH_DATE_STORAGE_KEY, birthIso);
+      setStorageError("");
+    } catch (error) {
+      console.error("Não foi possível salvar a data no navegador.", error);
+      setStorageError(
+        "Não foi possível salvar sua data neste dispositivo. Verifique as configurações de armazenamento do navegador.",
+      );
+    }
+  }, [appReady, birthIso]);
 
   const life = useMemo(() => {
     if (!birthIso || !todayIso) return null;
@@ -457,17 +523,20 @@ export default function Home() {
     );
     const elapsedDays = Math.floor((today - birthDate) / DAY_IN_MS);
     const livedDays = Math.min(totalDays, Math.max(0, elapsedDays + 1));
-    const remainingDays = totalDays - livedDays;
 
     return {
       birthDate,
       today,
       totalDays,
       livedDays,
-      remainingDays,
       percentage: Math.min(100, (livedDays / totalDays) * 100),
     };
   }, [birthIso, todayIso]);
+  const gridCounts = life
+    ? getGridCounts(gridView, life.birthDate, life.today, life.totalDays)
+    : null;
+  const selectedGridView =
+    GRID_VIEWS.find((option) => option.value === gridView) ?? GRID_VIEWS[0];
 
   function handleBirthSubmit(date: string) {
     setBirthIso(date);
@@ -494,6 +563,12 @@ export default function Home() {
         )}
       </header>
 
+      {storageError && (
+        <p className="storage-notice" role="status">
+          {storageError}
+        </p>
+      )}
+
       <section className="intro-section">
         <p className="eyebrow">A VIDA É FINITA. O AGORA É SEU.</p>
         <h1>
@@ -512,7 +587,7 @@ export default function Home() {
         </p>
       </section>
 
-      {life ? (
+      {life && gridCounts ? (
         <>
           <section aria-label="Resumo da sua vida" className="metrics-grid">
             <MetricCard
@@ -521,18 +596,18 @@ export default function Home() {
                 month: "short",
                 year: "numeric",
               })}`}
-              label="Dias vividos"
-              value={life.livedDays.toLocaleString("pt-BR")}
+              label={`${selectedGridView.label} vividos`}
+              value={gridCounts.lived.toLocaleString("pt-BR")}
             />
             <MetricCard
               detail="O tempo que ainda é seu"
-              label="Dias restantes"
-              value={life.remainingDays.toLocaleString("pt-BR")}
+              label={`${selectedGridView.label} restantes`}
+              value={gridCounts.remaining.toLocaleString("pt-BR")}
             />
             <MetricCard
               detail="Uma vida de 90 anos"
-              label="Total de dias"
-              value={life.totalDays.toLocaleString("pt-BR")}
+              label={`Total de ${selectedGridView.unit}`}
+              value={gridCounts.total.toLocaleString("pt-BR")}
             />
             <MetricCard
               detail={`${life.percentage.toLocaleString("pt-BR", {
@@ -561,7 +636,15 @@ export default function Home() {
                 <p className="eyebrow">UMA VIDA DE CADA VEZ</p>
                 <h2 id="grid-title">O seu mapa do tempo</h2>
               </div>
-              <p className="grid-period">90 anos · {life.totalDays.toLocaleString("pt-BR")} dias</p>
+              <p className="grid-period">
+                {gridView === "years"
+                  ? "90 anos de vida"
+                  : `90 anos · ${
+                      gridView === "days"
+                        ? life.totalDays.toLocaleString("pt-BR")
+                        : (LIFE_EXPECTANCY * 12).toLocaleString("pt-BR")
+                    } ${gridView === "days" ? "dias" : "meses"}`}
+              </p>
             </div>
             <div className="grid-card">
               <Select
@@ -574,7 +657,14 @@ export default function Home() {
                   aria-label="Escala do tabuleiro"
                   className="grid-view-trigger"
                 >
-                  <SelectValue />
+                  <SelectValue>
+                    {(value) =>
+                      isGridView(value)
+                        ? GRID_VIEWS.find((option) => option.value === value)
+                            ?.label
+                        : selectedGridView.label
+                    }
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent
                   align="start"
@@ -623,7 +713,7 @@ export default function Home() {
         <div aria-hidden="true" className="loading-space" />
       )}
 
-      {modalOpen && todayIso && (
+      {appReady && modalOpen && todayIso && (
         <BirthDateModal
           initialDate={birthIso}
           onClose={() => setModalOpen(false)}
